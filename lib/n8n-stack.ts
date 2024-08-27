@@ -34,12 +34,12 @@ import {
 import { IRole, PolicyStatement, Role, ServicePrincipal } from 'aws-cdk-lib/aws-iam'
 import { ILogGroup, LogGroup, RetentionDays } from 'aws-cdk-lib/aws-logs'
 import {
+  AuroraPostgresEngineVersion,
   Credentials,
-  DatabaseInstance,
-  DatabaseInstanceEngine,
-  DatabaseSecret,
-  IDatabaseInstance,
-  PostgresEngineVersion,
+  DatabaseCluster,
+  DatabaseClusterEngine,
+  IDatabaseCluster,
+  ParameterGroup,
 } from 'aws-cdk-lib/aws-rds'
 import { ARecord, HostedZone } from 'aws-cdk-lib/aws-route53'
 import { LoadBalancerTarget } from 'aws-cdk-lib/aws-route53-targets'
@@ -59,7 +59,7 @@ export class N8NStack extends Stack {
   private readonly domainName: string
   private readonly hostedZoneId: string
   private readonly ecsCluster: ICluster
-  private readonly database: IDatabaseInstance
+  private readonly database: IDatabaseCluster
   private readonly redis: CfnCacheCluster
   private readonly lbListener: IApplicationListener
   private readonly taskRole: IRole
@@ -80,7 +80,7 @@ export class N8NStack extends Stack {
   constructor(scope: Construct, id: string, props: N8NStackProps) {
     super(scope, id, {
       env: {
-        region: props.region || 'eu-central-1',
+        region: props.region || 'us-east-1',
         account: process.env.CDK_DEFAULT_ACCOUNT,
       },
     })
@@ -121,9 +121,13 @@ export class N8NStack extends Stack {
     })
 
     this.secrets = {
-      database: new DatabaseSecret(this, 'DatabaseSecret', {
-        username: 'n8n',
+      database: new Secret(this, 'DatabaseSecret', {
         secretName: 'n8n-DatabaseSecret',
+        generateSecretString: {
+          secretStringTemplate: JSON.stringify({ username: databaseUser }),
+          generateStringKey: 'password',
+          excludePunctuation: true,
+        },
       }),
       encryption: new Secret(this, 'EncryptionKey', {
         secretName: 'n8n-EncryptionKey',
@@ -156,24 +160,27 @@ export class N8NStack extends Stack {
       }),
     }
 
-    this.database = new DatabaseInstance(this, 'DatabaseInstance', {
-      databaseName,
-      instanceIdentifier: databaseName,
-      vpc,
-      vpcSubnets: {
-        onePerAz: true,
-        subnetType: SubnetType.PRIVATE_ISOLATED,
+    const dbParameterGroup = new ParameterGroup(this, 'DBParameterGroup', {
+      engine: DatabaseClusterEngine.auroraPostgres({ version: AuroraPostgresEngineVersion.VER_16_3 }),
+      parameters: {
+        'rds.force_ssl': '0',
       },
-      securityGroups: [this.securityGroups.database],
-      engine: DatabaseInstanceEngine.postgres({
-        version: PostgresEngineVersion.VER_13,
-      }),
+    })
+
+    this.database = new DatabaseCluster(this, 'DatabaseCluster', {
+      engine: DatabaseClusterEngine.auroraPostgres({ version: AuroraPostgresEngineVersion.VER_16_3 }),
       credentials: Credentials.fromSecret(this.secrets.database),
+      instanceProps: {
+        instanceType: InstanceType.of(InstanceClass.T4G, InstanceSize.MEDIUM),
+        vpcSubnets: {
+          subnetType: SubnetType.PRIVATE_ISOLATED,
+        },
+        vpc,
+        securityGroups: [this.securityGroups.database],
+      },
+      defaultDatabaseName: databaseName,
       removalPolicy: RemovalPolicy.DESTROY,
-      instanceType: InstanceType.of(
-        InstanceClass.T4G,
-        InstanceSize.SMALL
-      ),
+      parameterGroup: dbParameterGroup,
     })
 
     const redisSubnetGroup = new CfnSubnetGroup(this, 'RedisSubnetGroup', {
@@ -187,7 +194,7 @@ export class N8NStack extends Stack {
       engine: 'redis',
       engineVersion: '7.0',
       autoMinorVersionUpgrade: false,
-      cacheNodeType: 'cache.t2.micro',
+      cacheNodeType: 'cache.t4g.medium',
       numCacheNodes: 1,
       cacheSubnetGroupName: redisSubnetGroup.ref,
       vpcSecurityGroupIds: [this.securityGroups.redis.securityGroupId],
@@ -258,8 +265,8 @@ export class N8NStack extends Stack {
         family: `n8n-${serviceName}`,
         taskRole: this.taskRole,
         executionRole: this.taskRole,
-        cpu: 512,
-        memoryLimitMiB: serviceName === 'main' ? 1024 : 2048,
+        cpu: 2048,
+        memoryLimitMiB: serviceName === 'main' ? 2048 : 4096,
       }
     )
 
@@ -269,8 +276,8 @@ export class N8NStack extends Stack {
       environment: {
         N8N_DIAGNOSTICS_ENABLED: 'true',
         DB_TYPE: 'postgresdb',
-        DB_POSTGRESDB_HOST: this.database.dbInstanceEndpointAddress,
-        DB_POSTGRESDB_PORT: this.database.dbInstanceEndpointPort,
+        DB_POSTGRESDB_HOST: this.database.clusterEndpoint.hostname,
+        DB_POSTGRESDB_PORT: this.database.clusterEndpoint.port.toString(),
         DB_POSTGRESDB_DATABASE: databaseName,
         DB_POSTGRESDB_USER: databaseUser,
         DB_POSTGRESDB_PASSWORD: this.secrets.database
@@ -307,52 +314,6 @@ export class N8NStack extends Stack {
       ],
     })
 
-    // let fileSystem: FileSystem | undefined = undefined
-    // if (serviceName === 'main') {
-    //   fileSystem = new FileSystem(this, 'FileSystem', { vpc: this.vpc })
-    //   const efsAccessPoint = fileSystem.addAccessPoint('AccessPoint', {
-    //     createAcl: {
-    //       ownerUid: '1000',
-    //       ownerGid: '1000',
-    //       permissions: '755',
-    //     },
-    //     posixUser: {
-    //       uid: '1000',
-    //       gid: '1000'
-    //     }
-    //   })
-    //   efsAccessPoint.node.addDependency(fileSystem)
-
-    //   this.taskRole.addToPrincipalPolicy(new PolicyStatement({
-    //     actions: [
-    //       'elasticfilesystem:ClientMount',
-    //       'elasticfilesystem:ClientWrite',
-    //       'elasticfilesystem:ClientRootAccess'
-    //     ],
-    //     resources: [
-    //       efsAccessPoint.accessPointArn,
-    //       fileSystem.fileSystemArn
-    //     ]
-    //   }))
-
-    //   taskDefinition.addVolume({
-    //     name: 'Persistance',
-    //     efsVolumeConfiguration: {
-    //       fileSystemId: fileSystem.fileSystemId,
-    //       transitEncryption: 'ENABLED',
-    //       authorizationConfig: {
-    //         accessPointId: efsAccessPoint.accessPointId,
-    //       }
-    //     },
-    //   })
-
-    //   container.addMountPoints({
-    //     readOnly: false,
-    //     containerPath: '/home/node/.n8n',
-    //     sourceVolume: 'Persistance'
-    //   })
-    // }
-
     const service = new FargateService(this, `Service-${serviceName}`, {
       serviceName: `n8n-${serviceName}`,
       cluster: this.ecsCluster,
@@ -367,7 +328,6 @@ export class N8NStack extends Stack {
     service.connections.allowTo(this.securityGroups.redis, Port.tcp(6379))
     service.connections.allowTo(this.securityGroups.database, Port.tcp(5432))
     service.connections.allowFromAnyIpv4(Port.tcp(port))
-    // fileSystem?.connections.allowDefaultPortFrom(service)
 
     if (serviceName !== 'worker') {
       this.lbListener.addTargets(`n8n-${serviceName}`, {

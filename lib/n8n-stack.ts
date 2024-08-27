@@ -192,7 +192,7 @@ export class N8NStack extends Stack {
     this.redis = new CfnCacheCluster(this, 'RedisCluster', {
       clusterName: 'n8n',
       engine: 'redis',
-      engineVersion: '7.0',
+      engineVersion: '7.1',
       autoMinorVersionUpgrade: false,
       cacheNodeType: 'cache.t4g.medium',
       numCacheNodes: 1,

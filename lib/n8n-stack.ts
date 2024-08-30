@@ -279,7 +279,7 @@ export class N8NStack extends Stack {
     )
 
     const container = taskDefinition.addContainer(`n8n-${serviceName}`, {
-      image: ContainerImage.fromRegistry('gsogol/mabbly:1.57.1'),
+      image: ContainerImage.fromRegistry('gsogol/mabbly:1.57.2'),
       command: [...(serviceName === 'main' ? ['start'] : serviceName === 'worker' ? ['worker', '--concurrency=20'] : [serviceName])],
       environment: {
         N8N_DIAGNOSTICS_ENABLED: 'true',

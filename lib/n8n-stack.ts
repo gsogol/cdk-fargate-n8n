@@ -8,6 +8,7 @@ import {
   InstanceClass,
   InstanceSize,
   InstanceType,
+  Peer,
   Port,
   SecurityGroup,
   SubnetType,
@@ -147,7 +148,7 @@ export class N8NStack extends Stack {
       database: new SecurityGroup(this, 'DatabaseSecurityGroup', {
         vpc,
         securityGroupName: 'n8n-Database',
-        allowAllOutbound: false,
+        allowAllOutbound: true
       }),
       redis: new SecurityGroup(this, 'RedisSecurityGroup', {
         vpc,
@@ -159,6 +160,12 @@ export class N8NStack extends Stack {
         securityGroupName: 'n8n-App',
       }),
     }
+
+    this.securityGroups.database.addIngressRule(
+      Peer.anyIpv4(),
+      Port.tcp(5432), // allow inbound traffic on port 5432 (postgres)
+      'allow inbound traffic from anywhere to the db on port 5432'
+    )
 
     const dbParameterGroup = new ParameterGroup(this, 'DBParameterGroup', {
       engine: DatabaseClusterEngine.auroraPostgres({ version: AuroraPostgresEngineVersion.VER_16_3 }),
@@ -173,14 +180,15 @@ export class N8NStack extends Stack {
       instanceProps: {
         instanceType: InstanceType.of(InstanceClass.T4G, InstanceSize.MEDIUM),
         vpcSubnets: {
-          subnetType: SubnetType.PRIVATE_ISOLATED,
+          subnetType: SubnetType.PUBLIC,
         },
         vpc,
+        publiclyAccessible: true,
         securityGroups: [this.securityGroups.database],
       },
       defaultDatabaseName: databaseName,
       removalPolicy: RemovalPolicy.DESTROY,
-      parameterGroup: dbParameterGroup,
+      parameterGroup: dbParameterGroup
     })
 
     const redisSubnetGroup = new CfnSubnetGroup(this, 'RedisSubnetGroup', {
@@ -255,9 +263,9 @@ export class N8NStack extends Stack {
     this.createService('webhook')
     this.createService('main')
     this.createService('worker')
-  }
 
-  private createService(serviceName: 'main' | 'worker' | 'webhook') {
+
+  }  private createService(serviceName: 'main' | 'worker' | 'webhook') {
     const taskDefinition = new FargateTaskDefinition(
       this,
       `TaskDefinition-${serviceName}`,
@@ -266,12 +274,12 @@ export class N8NStack extends Stack {
         taskRole: this.taskRole,
         executionRole: this.taskRole,
         cpu: 2048,
-        memoryLimitMiB: serviceName === 'main' ? 2048 : 4096,
+        memoryLimitMiB: serviceName === 'main' ? 4096 : 4096,
       }
     )
 
     const container = taskDefinition.addContainer(`n8n-${serviceName}`, {
-      image: ContainerImage.fromRegistry('n8nio/n8n:latest'),
+      image: ContainerImage.fromRegistry('gsogol/mabbly:1.57.1'),
       command: [...(serviceName === 'main' ? ['start'] : serviceName === 'worker' ? ['worker', '--concurrency=20'] : [serviceName])],
       environment: {
         N8N_DIAGNOSTICS_ENABLED: 'true',

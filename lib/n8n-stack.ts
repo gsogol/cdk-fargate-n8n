@@ -96,6 +96,11 @@ export class N8NStack extends Stack {
       description: 'The Route53 hosted zone to manage DNS entries',
     })
 
+    const certificateArn = new CfnParameter(this, 'CertificateArn', {
+      type: 'String',
+      description: 'The ARN of the existing ACM certificate',
+    });
+
     this.domainName = domainName.valueAsString
     this.hostedZoneId = hostedZoneId.valueAsString
 
@@ -104,11 +109,7 @@ export class N8NStack extends Stack {
       hostedZoneId: this.hostedZoneId,
     })
 
-    const certificate = new Certificate(this, 'Certificate', {
-      certificateName: 'n8n',
-      domainName: this.domainName,
-      validation: CertificateValidation.fromDns(hostedZone),
-    })
+    const certificate = Certificate.fromCertificateArn(this, 'Certificate', certificateArn.valueAsString);
 
     const vpc = this.vpc = new Vpc(this, 'VPC', {
       vpcName: 'n8n',
@@ -263,9 +264,9 @@ export class N8NStack extends Stack {
     this.createService('webhook')
     this.createService('main')
     this.createService('worker')
-
-
-  }  private createService(serviceName: 'main' | 'worker' | 'webhook') {
+  }  
+  
+  private createService(serviceName: 'main' | 'worker' | 'webhook') {
     const taskDefinition = new FargateTaskDefinition(
       this,
       `TaskDefinition-${serviceName}`,
@@ -279,10 +280,9 @@ export class N8NStack extends Stack {
     )
 
     const container = taskDefinition.addContainer(`n8n-${serviceName}`, {
-      image: ContainerImage.fromRegistry('gsogol/mabbly:1.57.2'),
+      image: ContainerImage.fromRegistry('gsogol/mabbly:1.56.9'),
       command: [...(serviceName === 'main' ? ['start'] : serviceName === 'worker' ? ['worker', '--concurrency=20'] : [serviceName])],
       environment: {
-        N8N_DIAGNOSTICS_ENABLED: 'true',
         DB_TYPE: 'postgresdb',
         DB_POSTGRESDB_HOST: this.database.clusterEndpoint.hostname,
         DB_POSTGRESDB_PORT: this.database.clusterEndpoint.port.toString(),
@@ -295,6 +295,8 @@ export class N8NStack extends Stack {
         N8N_USER_MANAGEMENT_JWT_SECRET: this.secrets.jwt.secretValue.unsafeUnwrap(),
         EXECUTIONS_PROCESS: 'main',
         EXECUTIONS_MODE: 'queue',
+        N8N_DIAGNOSTICS_ENABLED: 'false',
+        N8N_VERSION_NOTIFICATIONS_ENABLED: 'false',
         N8N_DISABLE_PRODUCTION_MAIN_PROCESS: 'true',
         QUEUE_BULL_REDIS_HOST: this.redis.attrRedisEndpointAddress,
         QUEUE_HEALTH_CHECK_ACTIVE: 'true',
@@ -325,13 +327,32 @@ export class N8NStack extends Stack {
     const service = new FargateService(this, `Service-${serviceName}`, {
       serviceName: `n8n-${serviceName}`,
       cluster: this.ecsCluster,
-      desiredCount: serviceName === 'main' ? 1 : serviceName === 'webhook' ? 1 : 2, // TODO: auto-scale workers
+      desiredCount: serviceName === 'main' ? 1 : serviceName === 'webhook' ? 1 : undefined,
       taskDefinition,
       securityGroups: [this.securityGroups.app],
       vpcSubnets: {
         subnetType: SubnetType.PRIVATE_WITH_EGRESS,
       },
     })
+
+    if (serviceName === 'worker') {
+      const scaling = service.autoScaleTaskCount({
+        minCapacity: 1,
+        maxCapacity: 10,
+      })
+
+      scaling.scaleOnCpuUtilization('CpuScaling', {
+        targetUtilizationPercent: 70,
+        scaleInCooldown: Duration.seconds(60),
+        scaleOutCooldown: Duration.seconds(60),
+      })
+
+      scaling.scaleOnMemoryUtilization('MemoryScaling', {
+        targetUtilizationPercent: 70,
+        scaleInCooldown: Duration.seconds(60),
+        scaleOutCooldown: Duration.seconds(60),
+      })
+    }
 
     service.connections.allowTo(this.securityGroups.redis, Port.tcp(6379))
     service.connections.allowTo(this.securityGroups.database, Port.tcp(5432))

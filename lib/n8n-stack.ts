@@ -101,6 +101,13 @@ export class N8NStack extends Stack {
       description: 'The ARN of the existing ACM certificate',
     });
 
+    const databaseInstanceCount = new CfnParameter(this, 'DatabaseInstanceCount', {
+      type: 'Number',
+      description: 'The number of instances to create for Aurora PostgreSQL',
+      default: 2,
+      minValue: 1,
+    });
+
     this.domainName = domainName.valueAsString
     this.hostedZoneId = hostedZoneId.valueAsString
 
@@ -187,6 +194,7 @@ export class N8NStack extends Stack {
         publiclyAccessible: true,
         securityGroups: [this.securityGroups.database],
       },
+      instances: databaseInstanceCount.valueAsNumber,
       defaultDatabaseName: databaseName,
       removalPolicy: RemovalPolicy.DESTROY,
       parameterGroup: dbParameterGroup

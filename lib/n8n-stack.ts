@@ -36,6 +36,7 @@ import { IRole, PolicyStatement, Role, ServicePrincipal } from 'aws-cdk-lib/aws-
 import { ILogGroup, LogGroup, RetentionDays } from 'aws-cdk-lib/aws-logs'
 import {
   AuroraPostgresEngineVersion,
+  ClusterInstance,
   Credentials,
   DatabaseCluster,
   DatabaseClusterEngine,
@@ -185,16 +186,21 @@ export class N8NStack extends Stack {
     this.database = new DatabaseCluster(this, 'DatabaseCluster', {
       engine: DatabaseClusterEngine.auroraPostgres({ version: AuroraPostgresEngineVersion.VER_16_3 }),
       credentials: Credentials.fromSecret(this.secrets.database),
-      instanceProps: {
-        instanceType: InstanceType.of(InstanceClass.T4G, InstanceSize.MEDIUM),
-        vpcSubnets: {
+      vpc,
+      vpcSubnets: {
           subnetType: SubnetType.PUBLIC,
-        },
-        vpc,
-        publiclyAccessible: true,
-        securityGroups: [this.securityGroups.database],
       },
-      instances: databaseInstanceCount.valueAsNumber,
+      securityGroups: [this.securityGroups.database],
+      writer: ClusterInstance.provisioned('writer-instance', {
+        instanceType: InstanceType.of(InstanceClass.BURSTABLE4_GRAVITON, InstanceSize.MEDIUM),
+        instanceIdentifier: 'writer-instance',
+      }),
+      readers: Array.from({ length: databaseInstanceCount.valueAsNumber - 1 }, (_, index) =>
+        ClusterInstance.provisioned(`reader-instance-${index}`, {
+          instanceType: InstanceType.of(InstanceClass.BURSTABLE4_GRAVITON, InstanceSize.MEDIUM),
+          instanceIdentifier: `reader-instance-${index}`,
+        })    
+      ),
       defaultDatabaseName: databaseName,
       removalPolicy: RemovalPolicy.DESTROY,
       parameterGroup: dbParameterGroup

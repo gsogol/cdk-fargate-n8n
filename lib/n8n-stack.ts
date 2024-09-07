@@ -294,7 +294,7 @@ export class N8NStack extends Stack {
     )
 
     const container = taskDefinition.addContainer(`n8n-${serviceName}`, {
-      image: ContainerImage.fromRegistry('gsogol/mabbly:1.56.9'),
+      image: ContainerImage.fromRegistry('gsogol/mabbly:1.58.0'),
       command: [...(serviceName === 'main' ? ['start'] : serviceName === 'worker' ? ['worker', '--concurrency=20'] : [serviceName])],
       environment: {
         DB_TYPE: 'postgresdb',

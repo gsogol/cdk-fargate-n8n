@@ -109,6 +109,20 @@ export class N8NStack extends Stack {
       minValue: 1,
     });
 
+    const taskCpu = new CfnParameter(this, 'TaskCpu', {
+      type: 'Number',
+      description: 'CPU units for the Fargate task (1024 = 1 vCPU)',
+      default: 2048,
+      minValue: 1024,
+    });
+    
+    const taskMemory = new CfnParameter(this, 'TaskMemory', {
+      type: 'Number',
+      description: 'Memory (MB) for the Fargate task',
+      default: 4096,
+      minValue: 2048,
+    });
+
     this.domainName = domainName.valueAsString
     this.hostedZoneId = hostedZoneId.valueAsString
 
@@ -274,13 +288,12 @@ export class N8NStack extends Stack {
       retention: RetentionDays.ONE_MONTH,
       removalPolicy: RemovalPolicy.DESTROY,
     })
-
-    this.createService('webhook')
-    this.createService('main')
-    this.createService('worker')
+    this.createService('webhook', taskCpu, taskMemory)
+    this.createService('main', taskCpu, taskMemory)
+    this.createService('worker', taskCpu, taskMemory)
   }  
   
-  private createService(serviceName: 'main' | 'worker' | 'webhook') {
+  private createService(serviceName: 'main' | 'worker' | 'webhook', taskCpu: CfnParameter, taskMemory: CfnParameter) {
     const taskDefinition = new FargateTaskDefinition(
       this,
       `TaskDefinition-${serviceName}`,
@@ -288,13 +301,13 @@ export class N8NStack extends Stack {
         family: `n8n-${serviceName}`,
         taskRole: this.taskRole,
         executionRole: this.taskRole,
-        cpu: 2048,
-        memoryLimitMiB: serviceName === 'main' ? 4096 : 4096,
+        cpu: taskCpu.valueAsNumber,
+        memoryLimitMiB: taskMemory.valueAsNumber,
       }
-    )
+    )  
 
     const container = taskDefinition.addContainer(`n8n-${serviceName}`, {
-      image: ContainerImage.fromRegistry('gsogol/mabbly:1.58.0'),
+      image: ContainerImage.fromRegistry('gsogol/mabbly:1.90.4'),
       command: [...(serviceName === 'main' ? ['start'] : serviceName === 'worker' ? ['worker', '--concurrency=20'] : [serviceName])],
       environment: {
         DB_TYPE: 'postgresdb',
@@ -315,8 +328,15 @@ export class N8NStack extends Stack {
         QUEUE_BULL_REDIS_HOST: this.redis.attrRedisEndpointAddress,
         QUEUE_HEALTH_CHECK_ACTIVE: 'true',
         N8N_PUSH_BACKEND: 'websocket',
-        WEBHOOK_URL: `https://${this.domainName}`,
+        WEBHOOK_URL: `https://${this.domainName}/`,
         N8N_BLOCK_ENV_ACCESS_IN_NODE: 'true',
+        N8N_CONCURRENCY_PRODUCTION_LIMIT: '99',
+        EXECUTIONS_DATA_MAX_AGE: '1200',
+        EXECUTIONS_DATA_HARD_DELETE_BUFFER: '1200',
+        EXECUTIONS_DATA_PRUNE_HARD_DELETE_INTERVAL: '1440',
+        EXECUTIONS_DATA_PRUNE_SOFT_DELETE_INTERVAL: '1440',
+        EXECUTIONS_TIMEOUT: '7200',
+        EXECUTIONS_TIMEOUT_MAX: '7200',
       },
       logging: new AwsLogDriver({
         logGroup: this.logGroup,
@@ -357,13 +377,13 @@ export class N8NStack extends Stack {
 
       scaling.scaleOnCpuUtilization('CpuScaling', {
         targetUtilizationPercent: 70,
-        scaleInCooldown: Duration.seconds(60),
+        scaleInCooldown: Duration.seconds(10),
         scaleOutCooldown: Duration.seconds(60),
       })
 
       scaling.scaleOnMemoryUtilization('MemoryScaling', {
         targetUtilizationPercent: 70,
-        scaleInCooldown: Duration.seconds(60),
+        scaleInCooldown: Duration.seconds(10),
         scaleOutCooldown: Duration.seconds(60),
       })
     }
@@ -385,6 +405,8 @@ export class N8NStack extends Stack {
               ListenerCondition.pathPatterns([
                 '/webhook/*',
                 '/webhook-waiting/*',
+                '/form/*',
+                '/form-waiting/*'
               ]),
             ]
             : []),
